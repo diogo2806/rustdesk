@@ -16,6 +16,7 @@ jobs:
         with:
           ref: fix/3762-asio-multichannel
           fetch-depth: 0
+          submodules: recursive
 
       - name: Apply ASIO backend changes
         shell: python
@@ -82,7 +83,6 @@ jobs:
           text = text.replace('            for d in HOST\n', '            for d in host\n', 1)
           text = text.replace('            HOST.default_input_device()\n', '            host.default_input_device()\n', 1)
 
-          # ScreenCaptureKit fallback must pass the selected/default host too.
           text = text.replace(
               '''    fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {\n        let audio_input = super::get_audio_input();\n        if !audio_input.is_empty() {\n            return get_audio_input(&audio_input);\n        }\n        if !is_screen_capture_kit_available() {\n            return get_audio_input("");\n        }\n''',
               '''    fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {\n        let host = super::get_audio_host();\n        let audio_input = super::get_audio_input();\n        if !audio_input.is_empty() {\n            return get_audio_input(&host, &audio_input);\n        }\n        if !is_screen_capture_kit_available() {\n            return get_audio_input(&host, "");\n        }\n''',
