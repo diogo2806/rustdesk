@@ -196,6 +196,7 @@ mod cpal_impl {
     }
 
     const AUDIO_PACKETS_PER_SECOND: usize = 100;
+    const MAX_CAPTURE_CHANNELS: u16 = 64;
 
     #[cfg(feature = "screencapturekit")]
     lazy_static::lazy_static! {
@@ -301,6 +302,8 @@ mod cpal_impl {
             config: CaptureFrameProcessorConfig,
             sender: audio_capture_queue::CapturePcmSender,
         ) -> ResultType<Self> {
+            validate_capture_channels(config.device_channel)?;
+            validate_capture_channels(config.encode_channel)?;
             let resampler = if config.input_rate == config.output_rate {
                 None
             } else {
@@ -347,8 +350,21 @@ mod cpal_impl {
         }
     }
 
+    fn validate_capture_channels(channels: u16) -> ResultType<()> {
+        if channels == 0 {
+            bail!("Audio device reported zero channels");
+        }
+        if channels > MAX_CAPTURE_CHANNELS {
+            bail!(
+                "Audio device exposes unsupported channel count: {channels} (max {MAX_CAPTURE_CHANNELS})"
+            );
+        }
+        Ok(())
+    }
+
     fn capture_packet_layout(sample_rate: u32, channels: u16) -> ResultType<(usize, usize)> {
-        if sample_rate < AUDIO_PACKETS_PER_SECOND as u32 || channels == 0 {
+        validate_capture_channels(channels)?;
+        if sample_rate < AUDIO_PACKETS_PER_SECOND as u32 {
             bail!("Invalid audio capture layout: sample_rate={sample_rate}, channels={channels}");
         }
         let frames = sample_rate as usize / AUDIO_PACKETS_PER_SECOND;
@@ -555,6 +571,7 @@ mod cpal_impl {
         let sample_rate_0 = config.sample_rate().0;
         log::debug!("Audio sample rate : {}", output.sample_rate);
         let device_channel = config.channels();
+        validate_capture_channels(device_channel)?;
         let (_, capture_frame_samples) = capture_packet_layout(sample_rate_0, device_channel)?;
         let mut frame = audio_capture::CaptureFrameBuffer::new(capture_frame_samples)?;
         let processor_config = CaptureFrameProcessorConfig {
@@ -608,6 +625,10 @@ mod cpal_impl {
         const POSITIVE_FULL_SCALE_LIMIT: f32 = 0.99;
         const STEREO_CHANNELS: u16 = 2;
         const SURROUND_CHANNELS: u16 = 6;
+        const CHANNELS_8: u16 = 8;
+        const CHANNELS_16: u16 = 16;
+        const CHANNELS_32: u16 = 32;
+        const TOO_MANY_CHANNELS: u16 = 65;
         const ZERO_CHANNELS: u16 = 0;
 
         #[test]
@@ -630,6 +651,13 @@ mod cpal_impl {
             );
             assert!(capture_packet_layout(INVALID_CAPTURE_RATE, MONO_CHANNELS).is_err());
             assert!(capture_packet_layout(RATE_48_KHZ, ZERO_CHANNELS).is_err());
+            assert!(capture_packet_layout(RATE_48_KHZ, TOO_MANY_CHANNELS).is_err());
+            for channels in [SURROUND_CHANNELS, CHANNELS_8, CHANNELS_16, CHANNELS_32] {
+                assert_eq!(
+                    capture_packet_layout(RATE_48_KHZ, channels).unwrap(),
+                    (expected_frames, expected_frames * channels as usize)
+                );
+            }
         }
 
         #[test]
@@ -639,6 +667,9 @@ mod cpal_impl {
                 (RATE_48_KHZ, RATE_48_KHZ, STEREO_CHANNELS, STEREO_CHANNELS),
                 (RATE_44_1_KHZ, RATE_24_KHZ, STEREO_CHANNELS, STEREO_CHANNELS),
                 (RATE_48_KHZ, RATE_48_KHZ, SURROUND_CHANNELS, STEREO_CHANNELS),
+                (RATE_48_KHZ, RATE_48_KHZ, CHANNELS_8, STEREO_CHANNELS),
+                (RATE_48_KHZ, RATE_48_KHZ, CHANNELS_16, STEREO_CHANNELS),
+                (RATE_48_KHZ, RATE_48_KHZ, CHANNELS_32, STEREO_CHANNELS),
             ] {
                 assert_capture_processor_does_not_allocate(CaptureFrameProcessorConfig {
                     input_rate,
