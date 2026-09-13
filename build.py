@@ -130,6 +130,11 @@ def make_parser():
         help='Enable feature vram, only available on windows now.'
     )
     parser.add_argument(
+        '--asio',
+        action='store_true',
+        help='Enable the optional Windows ASIO audio backend.'
+    )
+    parser.add_argument(
         '--portable',
         action='store_true',
         help='Build windows portable'
@@ -318,6 +323,8 @@ def get_features(args):
         features.append('hwcodec')
     if args.vram:
         features.append('vram')
+    if args.asio:
+        features.append('asio')
     if args.flutter:
         features.append('flutter')
     if args.unix_file_copy_paste:
