@@ -1,0 +1,116 @@
+name: Apply issue 3762 ASIO backend patch
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/3762-asio-multichannel
+          fetch-depth: 0
+
+      - name: Apply ASIO backend changes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          def replace(path, old, new, count=1):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f'Expected source block not found in {path}:\n{old}')
+              p.write_text(text.replace(old, new, count))
+
+          replace(
+              'Cargo.toml',
+              'screencapturekit = ["cpal/screencapturekit"]\n',
+              'screencapturekit = ["cpal/screencapturekit"]\nasio = ["cpal/asio"]\n'
+          )
+
+          replace(
+              'build.py',
+              '''    parser.add_argument(\n        '--vram',\n        action='store_true',\n        help='Enable feature vram, only available on windows now.'\n    )\n''',
+              '''    parser.add_argument(\n        '--vram',\n        action='store_true',\n        help='Enable feature vram, only available on windows now.'\n    )\n    parser.add_argument(\n        '--asio',\n        action='store_true',\n        help='Enable the optional Windows ASIO audio backend.'\n    )\n'''
+          )
+
+          replace(
+              'build.py',
+              '''    if args.vram:\n        features.append('vram')\n    if args.flutter:\n''',
+              '''    if args.vram:\n        features.append('vram')\n    if args.asio:\n        features.append('asio')\n    if args.flutter:\n'''
+          )
+
+          audio = Path('src/server/audio_service.rs')
+          text = audio.read_text()
+
+          marker = '''lazy_static::lazy_static! {\n    static ref VOICE_CALL_INPUT_DEVICE: Arc::<Mutex::<Option<String>>> = Default::default();\n}\n'''
+          addition = marker + '''\n#[cfg(not(target_os = "linux"))]\npub fn get_audio_host() -> cpal::Host {\n    #[cfg(all(target_os = "windows", feature = "asio"))]\n    if Config::get_option("audio-host").eq_ignore_ascii_case("asio") {\n        match cpal::host_from_id(cpal::HostId::Asio) {\n            Ok(host) => {\n                log::info!("Using ASIO audio host");\n                return host;\n            }\n            Err(err) => {\n                log::warn!(\n                    "Failed to initialise ASIO audio host, falling back to default host: {err}"\n                );\n            }\n        }\n    }\n    cpal::default_host()\n}\n\n#[cfg(target_os = "windows")]\nfn is_asio_selected() -> bool {\n    #[cfg(feature = "asio")]\n    {\n        return Config::get_option("audio-host").eq_ignore_ascii_case("asio");\n    }\n    #[cfg(not(feature = "asio"))]\n    false\n}\n'''
+          if marker not in text:
+              raise SystemExit('VOICE_CALL_INPUT_DEVICE marker not found')
+          text = text.replace(marker, addition, 1)
+
+          text = text.replace(
+              '''    lazy_static::lazy_static! {\n        static ref HOST: Host = cpal::default_host();\n    }\n\n''',
+              '',
+              1
+          )
+
+          old = '''    #[cfg(windows)]\n    fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {\n        let audio_input = super::get_audio_input();\n        if !audio_input.is_empty() {\n            return get_audio_input(&audio_input);\n        }\n        let device = HOST\n            .default_output_device()\n            .with_context(|| "Failed to get default output device for loopback")?;\n'''
+          new = '''    #[cfg(windows)]\n    fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {\n        let host = super::get_audio_host();\n        let audio_input = super::get_audio_input();\n        if !audio_input.is_empty() {\n            return get_audio_input(&host, &audio_input);\n        }\n        if super::is_asio_selected() {\n            return get_audio_input(&host, "");\n        }\n        let device = host\n            .default_output_device()\n            .with_context(|| "Failed to get default output device for loopback")?;\n'''
+          if old not in text:
+              raise SystemExit('Windows get_device block not found')
+          text = text.replace(old, new, 1)
+
+          text = text.replace(
+              '''    #[cfg(not(any(windows, feature = "screencapturekit")))]\n    fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {\n        let audio_input = super::get_audio_input();\n        get_audio_input(&audio_input)\n    }\n''',
+              '''    #[cfg(not(any(windows, feature = "screencapturekit")))]\n    fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {\n        let host = super::get_audio_host();\n        let audio_input = super::get_audio_input();\n        get_audio_input(&host, &audio_input)\n    }\n''',
+              1
+          )
+
+          text = text.replace(
+              '''    fn get_audio_input(audio_input: &str) -> ResultType<(Device, SupportedStreamConfig)> {\n''',
+              '''    fn get_audio_input(\n        host: &Host,\n        audio_input: &str,\n    ) -> ResultType<(Device, SupportedStreamConfig)> {\n''',
+              1
+          )
+          text = text.replace('            for d in HOST\n', '            for d in host\n', 1)
+          text = text.replace('            HOST.default_input_device()\n', '            host.default_input_device()\n', 1)
+
+          # ScreenCaptureKit fallback must pass the selected/default host too.
+          text = text.replace(
+              '''    fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {\n        let audio_input = super::get_audio_input();\n        if !audio_input.is_empty() {\n            return get_audio_input(&audio_input);\n        }\n        if !is_screen_capture_kit_available() {\n            return get_audio_input("");\n        }\n''',
+              '''    fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {\n        let host = super::get_audio_host();\n        let audio_input = super::get_audio_input();\n        if !audio_input.is_empty() {\n            return get_audio_input(&host, &audio_input);\n        }\n        if !is_screen_capture_kit_available() {\n            return get_audio_input(&host, "");\n        }\n''',
+              1
+          )
+
+          audio.write_text(text)
+
+          common = Path('src/common.rs')
+          ctext = common.read_text()
+          old = '''        use cpal::traits::{DeviceTrait, HostTrait};\n        let host = cpal::default_host();\n        let dev = host.default_input_device();\n'''
+          new = '''        use cpal::traits::{DeviceTrait, HostTrait};\n        let host = crate::audio_service::get_audio_host();\n        let dev = host.default_input_device();\n'''
+          if old not in ctext:
+              raise SystemExit('get_default_sound_input host block not found')
+          common.write_text(ctext.replace(old, new, 1))
+
+      - name: Format and validate
+        run: |
+          rustfmt --edition 2021 src/server/audio_service.rs src/common.rs
+          python3 -m py_compile build.py
+          git diff --check
+          cargo metadata --no-deps --format-version 1 >/dev/null
+          cargo metadata --no-deps --format-version 1 --features asio >/dev/null
+
+      - name: Commit to working branch
+        run: |
+          git config user.name "diogo2806"
+          git config user.email "18616681+diogo2806@users.noreply.github.com"
+          git add Cargo.toml build.py src/server/audio_service.rs src/common.rs
+          git commit -m "feat(audio): add opt-in ASIO backend for #3762" || exit 0
+          git push origin HEAD:fix/3762-asio-multichannel
