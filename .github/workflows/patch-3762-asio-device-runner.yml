@@ -1,0 +1,91 @@
+name: Refine issue 3762 ASIO device selection
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/3762-asio-multichannel
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Refine ASIO selection to existing audio-input menu
+        shell: python
+        run: |
+          from pathlib import Path
+
+          audio = Path('src/server/audio_service.rs')
+          text = audio.read_text()
+
+          old = '''#[cfg(not(target_os = "linux"))]\npub fn get_audio_host() -> cpal::Host {\n    #[cfg(all(target_os = "windows", feature = "asio"))]\n    if Config::get_option("audio-host").eq_ignore_ascii_case("asio") {\n        match cpal::host_from_id(cpal::HostId::Asio) {\n            Ok(host) => {\n                log::info!("Using ASIO audio host");\n                return host;\n            }\n            Err(err) => {\n                log::warn!(\n                    "Failed to initialise ASIO audio host, falling back to default host: {err}"\n                );\n            }\n        }\n    }\n    cpal::default_host()\n}\n\n#[cfg(target_os = "windows")]\nfn is_asio_selected() -> bool {\n    #[cfg(feature = "asio")]\n    {\n        return Config::get_option("audio-host").eq_ignore_ascii_case("asio");\n    }\n    #[cfg(not(feature = "asio"))]\n    false\n}\n'''
+          new = '''#[cfg(all(target_os = "windows", feature = "asio"))]\npub const ASIO_DEVICE_SUFFIX: &str = " (ASIO)";\n'''
+          if old not in text:
+              raise SystemExit('Old audio-host implementation not found')
+          text = text.replace(old, new, 1)
+
+          old = '''    #[cfg(feature = "screencapturekit")]\n    fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {\n        let host = super::get_audio_host();\n        let audio_input = super::get_audio_input();\n        if !audio_input.is_empty() {\n            return get_audio_input(&host, &audio_input);\n        }\n        if !is_screen_capture_kit_available() {\n            return get_audio_input(&host, "");\n        }\n'''
+          new = '''    #[cfg(feature = "screencapturekit")]\n    fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {\n        let host = cpal::default_host();\n        let audio_input = super::get_audio_input();\n        if !audio_input.is_empty() {\n            return get_audio_input(&host, &audio_input);\n        }\n        if !is_screen_capture_kit_available() {\n            return get_audio_input(&host, "");\n        }\n'''
+          if old not in text:
+              raise SystemExit('ScreenCaptureKit get_device block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''    #[cfg(windows)]\n    fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {\n        let host = super::get_audio_host();\n        let audio_input = super::get_audio_input();\n        if !audio_input.is_empty() {\n            return get_audio_input(&host, &audio_input);\n        }\n        if super::is_asio_selected() {\n            return get_audio_input(&host, "");\n        }\n        let device = host\n            .default_output_device()\n            .with_context(|| "Failed to get default output device for loopback")?;\n'''
+          new = '''    #[cfg(windows)]\n    fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {\n        let audio_input = super::get_audio_input();\n        if !audio_input.is_empty() {\n            let (host, device_name) = get_windows_input_host(&audio_input)?;\n            return get_audio_input(&host, &device_name);\n        }\n        let host = cpal::default_host();\n        let device = host\n            .default_output_device()\n            .with_context(|| "Failed to get default output device for loopback")?;\n'''
+          if old not in text:
+              raise SystemExit('Windows get_device block not found')
+          text = text.replace(old, new, 1)
+
+          old = '''    #[cfg(not(any(windows, feature = "screencapturekit")))]\n    fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {\n        let host = super::get_audio_host();\n        let audio_input = super::get_audio_input();\n        get_audio_input(&host, &audio_input)\n    }\n'''
+          new = '''    #[cfg(not(any(windows, feature = "screencapturekit")))]\n    fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {\n        let host = cpal::default_host();\n        let audio_input = super::get_audio_input();\n        get_audio_input(&host, &audio_input)\n    }\n'''
+          if old not in text:
+              raise SystemExit('Non-Windows get_device block not found')
+          text = text.replace(old, new, 1)
+
+          marker = '''    fn get_audio_input(\n        host: &Host,\n        audio_input: &str,\n    ) -> ResultType<(Device, SupportedStreamConfig)> {\n'''
+          helper = '''    #[cfg(windows)]\n    fn get_windows_input_host(audio_input: &str) -> ResultType<(Host, String)> {\n        #[cfg(feature = "asio")]\n        if let Some(device_name) = audio_input.strip_suffix(super::ASIO_DEVICE_SUFFIX) {\n            let host = cpal::host_from_id(cpal::HostId::Asio)\n                .map_err(|err| anyhow!(err))\n                .with_context(|| "Failed to initialise ASIO audio host")?;\n            return Ok((host, device_name.to_owned()));\n        }\n        Ok((cpal::default_host(), audio_input.to_owned()))\n    }\n\n''' + marker
+          if marker not in text:
+              raise SystemExit('get_audio_input marker not found')
+          text = text.replace(marker, helper, 1)
+          audio.write_text(text)
+
+          common = Path('src/common.rs')
+          ctext = common.read_text()
+          ctext = ctext.replace(
+              '        let host = crate::audio_service::get_audio_host();\n',
+              '        let host = cpal::default_host();\n',
+              1,
+          )
+          common.write_text(ctext)
+
+          ui = Path('src/ui_interface.rs')
+          utext = ui.read_text()
+          old = '''            let host = cpal::default_host();\n            if let Ok(devices) = host.devices() {\n                for device in devices {\n                    if device.default_input_config().is_err() {\n                        continue;\n                    }\n                    if let Ok(name) = device.name() {\n                        out.push(name);\n                    }\n                }\n            }\n            out\n'''
+          new = '''            let host = cpal::default_host();\n            if let Ok(devices) = host.devices() {\n                for device in devices {\n                    if device.default_input_config().is_err() {\n                        continue;\n                    }\n                    if let Ok(name) = device.name() {\n                        out.push(name);\n                    }\n                }\n            }\n            #[cfg(all(windows, feature = "asio"))]\n            if let Ok(host) = cpal::host_from_id(cpal::HostId::Asio) {\n                if let Ok(devices) = host.devices() {\n                    for device in devices {\n                        if device.default_input_config().is_err() {\n                            continue;\n                        }\n                        if let Ok(name) = device.name() {\n                            out.push(format!(\n                                "{}{}",\n                                name,\n                                crate::audio_service::ASIO_DEVICE_SUFFIX\n                            ));\n                        }\n                    }\n                }\n            }\n            out\n'''
+          if old not in utext:
+              raise SystemExit('get_sound_inputs_ block not found')
+          ui.write_text(utext.replace(old, new, 1))
+
+      - name: Format and validate
+        run: |
+          rustfmt --edition 2021 src/server/audio_service.rs src/common.rs src/ui_interface.rs
+          python3 -m py_compile build.py
+          git diff --check
+          cargo metadata --no-deps --format-version 1 >/dev/null
+          cargo metadata --no-deps --format-version 1 --features asio >/dev/null
+
+      - name: Commit to working branch
+        run: |
+          git config user.name "diogo2806"
+          git config user.email "18616681+diogo2806@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock build.py src/server/audio_service.rs src/common.rs src/ui_interface.rs
+          git commit -m "fix(audio): select ASIO by input device for #3762" || exit 0
+          git push origin HEAD:fix/3762-asio-multichannel
