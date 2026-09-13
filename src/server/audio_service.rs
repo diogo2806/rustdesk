@@ -28,34 +28,8 @@ lazy_static::lazy_static! {
     static ref VOICE_CALL_INPUT_DEVICE: Arc::<Mutex::<Option<String>>> = Default::default();
 }
 
-#[cfg(not(target_os = "linux"))]
-pub fn get_audio_host() -> cpal::Host {
-    #[cfg(all(target_os = "windows", feature = "asio"))]
-    if Config::get_option("audio-host").eq_ignore_ascii_case("asio") {
-        match cpal::host_from_id(cpal::HostId::Asio) {
-            Ok(host) => {
-                log::info!("Using ASIO audio host");
-                return host;
-            }
-            Err(err) => {
-                log::warn!(
-                    "Failed to initialise ASIO audio host, falling back to default host: {err}"
-                );
-            }
-        }
-    }
-    cpal::default_host()
-}
-
-#[cfg(target_os = "windows")]
-fn is_asio_selected() -> bool {
-    #[cfg(feature = "asio")]
-    {
-        return Config::get_option("audio-host").eq_ignore_ascii_case("asio");
-    }
-    #[cfg(not(feature = "asio"))]
-    false
-}
+#[cfg(all(target_os = "windows", feature = "asio"))]
+pub const ASIO_DEVICE_SUFFIX: &str = " (ASIO)";
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 pub fn new() -> GenericService {
@@ -403,7 +377,7 @@ mod cpal_impl {
 
     #[cfg(feature = "screencapturekit")]
     fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {
-        let host = super::get_audio_host();
+        let host = cpal::default_host();
         let audio_input = super::get_audio_input();
         if !audio_input.is_empty() {
             return get_audio_input(&host, &audio_input);
@@ -425,14 +399,12 @@ mod cpal_impl {
 
     #[cfg(windows)]
     fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {
-        let host = super::get_audio_host();
         let audio_input = super::get_audio_input();
         if !audio_input.is_empty() {
-            return get_audio_input(&host, &audio_input);
+            let (host, device_name) = get_windows_input_host(&audio_input)?;
+            return get_audio_input(&host, &device_name);
         }
-        if super::is_asio_selected() {
-            return get_audio_input(&host, "");
-        }
+        let host = cpal::default_host();
         let device = host
             .default_output_device()
             .with_context(|| "Failed to get default output device for loopback")?;
@@ -450,9 +422,21 @@ mod cpal_impl {
 
     #[cfg(not(any(windows, feature = "screencapturekit")))]
     fn get_device() -> ResultType<(Device, SupportedStreamConfig)> {
-        let host = super::get_audio_host();
+        let host = cpal::default_host();
         let audio_input = super::get_audio_input();
         get_audio_input(&host, &audio_input)
+    }
+
+    #[cfg(windows)]
+    fn get_windows_input_host(audio_input: &str) -> ResultType<(Host, String)> {
+        #[cfg(feature = "asio")]
+        if let Some(device_name) = audio_input.strip_suffix(super::ASIO_DEVICE_SUFFIX) {
+            let host = cpal::host_from_id(cpal::HostId::Asio)
+                .map_err(|err| anyhow!(err))
+                .with_context(|| "Failed to initialise ASIO audio host")?;
+            return Ok((host, device_name.to_owned()));
+        }
+        Ok((cpal::default_host(), audio_input.to_owned()))
     }
 
     fn get_audio_input(

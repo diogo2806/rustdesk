@@ -381,6 +381,23 @@ pub fn get_sound_inputs() -> Vec<String> {
                     }
                 }
             }
+            #[cfg(all(windows, feature = "asio"))]
+            if let Ok(host) = cpal::host_from_id(cpal::HostId::Asio) {
+                if let Ok(devices) = host.devices() {
+                    for device in devices {
+                        if device.default_input_config().is_err() {
+                            continue;
+                        }
+                        if let Ok(name) = device.name() {
+                            out.push(format!(
+                                "{}{}",
+                                name,
+                                crate::audio_service::ASIO_DEVICE_SUFFIX
+                            ));
+                        }
+                    }
+                }
+            }
             out
         }
 
