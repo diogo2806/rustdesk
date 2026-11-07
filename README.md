@@ -61,6 +61,8 @@ Please download Sciter dynamic library yourself.
 
 ## How to Build on Linux
 
+> **Note:** The package commands below were written for the distributions and releases named in their headings, including older releases. For up-to-date build instructions, see the [official RustDesk build guide](https://rustdesk.com/docs/en/dev/build/).
+
 ### Ubuntu 18 (Debian 10)
 
 ```sh
