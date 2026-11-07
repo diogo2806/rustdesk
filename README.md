@@ -36,6 +36,17 @@ RustDesk welcomes contribution from everyone. See [CONTRIBUTING.md](docs/CONTRIB
     alt="Get it on Flathub"
     height="80">](https://flathub.org/apps/com.rustdesk.RustDesk)
 
+## About this fork
+
+This repository is a personal fork of [RustDesk](https://github.com/rustdesk/rustdesk), not an official RustDesk distribution. The original project's maintainers provide the official releases, documentation, and support channels.
+
+- **Upstream source and issue tracker:** [rustdesk/rustdesk](https://github.com/rustdesk/rustdesk)
+- **Official downloads:** [RustDesk releases](https://github.com/rustdesk/rustdesk/releases)
+- **Current build documentation:** [RustDesk developer guide](https://rustdesk.com/docs/en/dev/build/)
+- **Fork contact:** [Diogo Santos on LinkedIn](https://www.linkedin.com/in/diogo-santos-044b40b4/)
+
+Contributions intended for the upstream project should follow the [RustDesk contribution guidelines](https://github.com/rustdesk/rustdesk/blob/master/docs/CONTRIBUTING.md).
+
 ## Dependencies
 
 Desktop versions use Flutter or Sciter (deprecated) for GUI. This tutorial is for Sciter only, since it is easier and more friendly to start. Check out our [CI](https://github.com/rustdesk/rustdesk/blob/master/.github/workflows/flutter-build.yml) for building the Flutter version.
